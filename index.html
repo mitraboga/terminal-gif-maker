@@ -6,8 +6,8 @@
     <title>Terminal Gif Maker</title>
     <link rel="stylesheet" href="./styles.css" />
 
-    <!-- GIF encoder (client-side) -->
-    <script src="https://cdn.jsdelivr.net/npm/gif.js.optimized/dist/gif.js"></script>
+    <!-- GIF encoder (client-side) — PINNED version to avoid redirects -->
+    <script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
   </head>
 
   <body>
@@ -53,7 +53,6 @@
 
           <div id="rows" class="rows"></div>
 
-          <!-- Bottom multiline bar -->
           <div class="multiBar">
             <div class="multiBar__top">
               <label class="switchRow">
@@ -79,7 +78,7 @@
         </section>
       </main>
 
-      <!-- SETTINGS MODAL (starts hidden) -->
+      <!-- SETTINGS MODAL -->
       <div class="modal" id="settingsModal" hidden>
         <div class="modal__card">
           <div class="modal__head">
@@ -166,7 +165,7 @@
         </div>
       </div>
 
-      <!-- EXPORT MODAL (starts hidden) -->
+      <!-- EXPORT MODAL -->
       <div class="modal" id="exportModal" hidden>
         <div class="modal__card exportCard">
           <div class="modal__head">
