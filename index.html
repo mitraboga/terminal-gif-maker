@@ -4,9 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Terminal Gif Maker</title>
-    <link rel="stylesheet" href="./styles.css" />
 
-    <!-- GIF encoder (client-side) — PINNED version to avoid redirects -->
+    <!-- cache-bust css -->
+    <link rel="stylesheet" href="./styles.css?v=4" />
+
+    <!-- GIF encoder (pinned) -->
     <script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
   </head>
 
@@ -190,6 +192,7 @@
       </div>
     </div>
 
-    <script src="./app.js"></script>
+    <!-- cache-bust js -->
+    <script src="./app.js?v=4"></script>
   </body>
 </html>
