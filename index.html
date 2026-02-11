@@ -1,198 +1,232 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="author" content="Mitra Boga" />
+    <meta name="description" content="Create terminal-style GIF/MP4 recordings in the browser." />
     <title>Terminal Gif Maker</title>
 
-    <!-- cache-bust css -->
-    <link rel="stylesheet" href="./styles.css?v=4" />
-
-    <!-- GIF encoder (pinned) -->
-    <script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
 
   <body>
-    <div class="bg">
-      <header class="header">
-        <h1>Terminal Gif Maker</h1>
+    <div class="page">
+      <header class="hero">
+        <h1 class="title">Terminal Gif Maker</h1>
       </header>
 
-      <main class="wrap">
-        <section class="preview">
-          <div class="terminal">
-            <div class="terminal__topbar">
-              <span class="dot dot--red"></span>
-              <span class="dot dot--yellow"></span>
-              <span class="dot dot--green"></span>
-            </div>
-            <div class="terminal__screen" id="terminalScreen" aria-label="Terminal preview"></div>
-          </div>
-
-          <div class="actions">
-            <button class="btn btn--green" id="btnSim" type="button">Simulate</button>
-            <button class="btn btn--green" id="btnExport" type="button">Export</button>
-            <button class="btn btn--blue" id="btnSettings" type="button">Settings</button>
-          </div>
-
-          <div class="exportRow" id="exportRow" hidden>
-            <div class="exportRow__left">
-              <div class="spinner" id="spinner" hidden></div>
-              <div class="exportStatus" id="exportStatus">Ready</div>
-            </div>
-            <a class="btn btn--dark" id="downloadLink" href="#" download hidden>Download</a>
-          </div>
-        </section>
-
-        <section class="editor">
-          <div class="tableHead">
-            <div>Path</div>
-            <div>Command</div>
-            <div class="center">Typing<br />Animation</div>
-            <div class="center">Timeout (ms)</div>
-            <div class="center">+/-</div>
-          </div>
-
-          <div id="rows" class="rows"></div>
-
-          <div class="multiBar">
-            <div class="multiBar__top">
-              <label class="switchRow">
-                <span class="switch">
-                  <input id="multilineToggle" type="checkbox" />
-                  <span class="slider"></span>
-                </span>
-                <span class="muted">Multiline</span>
-              </label>
-
-              <div class="muted hintRight">
-                Tip: Leave <b>Path</b> blank to treat a row as output. ANSI works (ex: <code>\u001b[32m</code>).
+      <main class="main">
+        <!-- Preview -->
+        <section class="previewSection">
+          <div class="terminalWindow" aria-label="Terminal preview">
+            <div class="terminalTopbar">
+              <div class="dots" aria-hidden="true">
+                <span class="dot red"></span>
+                <span class="dot yellow"></span>
+                <span class="dot green"></span>
               </div>
             </div>
 
-            <textarea
-              id="multilineEditor"
-              class="multiEditor"
-              placeholder="Select a row above to edit its Command here…"
-              spellcheck="false"
-            ></textarea>
+            <div id="terminalScreen" class="terminalScreen" data-theme="midnight"></div>
+          </div>
+
+          <div class="controls">
+            <button id="btnSim" class="btn btnGreen" type="button">Simulate</button>
+            <button id="btnExport" class="btn btnGreen" type="button">Export</button>
+            <button id="btnSettings" class="btn btnBlue" type="button">Settings</button>
+          </div>
+
+          <!-- optional status row (shown by JS when exporting) -->
+          <div id="exportRow" class="exportRow" hidden>
+            <div class="exportLeft">
+              <span id="spinner" class="spinner" hidden aria-hidden="true"></span>
+              <span id="exportStatus">Ready</span>
+            </div>
+            <a id="downloadLink" class="downloadLink" href="#" hidden>Download</a>
+          </div>
+        </section>
+
+        <!-- Editor -->
+        <section class="editorSection">
+          <div class="tableCard">
+            <div class="tableHeader">
+              <div class="th thPath">Path</div>
+              <div class="th thCmd">Command</div>
+              <div class="th thTyping">Typing<br />Animation</div>
+              <div class="th thTimeout">Timeout (ms)</div>
+              <div class="th thOps">+/-</div>
+            </div>
+
+            <div id="rows" class="rows" aria-label="Rows editor"></div>
+
+            <!-- Bottom bar -->
+            <div class="multilineBar">
+              <div class="multilineLeft">
+                <span class="multilineLabel">Multiline</span>
+                <label class="switch" aria-label="Multiline toggle">
+                  <input id="multilineToggle" type="checkbox" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <textarea
+                id="multilineEditor"
+                class="multilineEditor"
+                placeholder="Select a row above to edit its full text…"
+                spellcheck="false"
+              ></textarea>
+            </div>
           </div>
         </section>
       </main>
 
-      <!-- SETTINGS MODAL -->
-      <div class="modal" id="settingsModal" hidden>
-        <div class="modal__card">
-          <div class="modal__head">
-            <div class="modal__title">Settings</div>
-            <button class="iconBtn" id="closeSettings" type="button" aria-label="Close">✕</button>
-          </div>
+      <!-- Footer -->
+      <footer class="siteFooter">
+        <div class="siteFooterInner">
+          <span>© <span id="footerYear"></span> Mitra Boga</span>
+          <span class="siteFooterSep">•</span>
+          <span>Author: Mitra Boga</span>
+          <span class="siteFooterSep">•</span>
+          <a href="https://github.com/mitraboga" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <span class="siteFooterSep">•</span>
+          <a href="https://www.linkedin.com/in/bogamitra/" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+          <span class="siteFooterSep">•</span>
+          <a href="./LICENSE" target="_blank" rel="noopener noreferrer">License</a>
+        </div>
+      </footer>
+    </div>
 
-          <div class="modal__grid">
-            <label class="field">
-              <span>Typing speed (ms/char)</span>
-              <input id="setTyping" type="number" min="1" step="1" />
-            </label>
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modalOverlay" hidden>
+      <div class="modalCard modalWide" role="dialog" aria-modal="true" aria-label="Settings">
+        <div class="modalHeader">
+          <div class="modalTitle">Settings</div>
+          <button id="closeSettings" class="iconBtn" type="button" aria-label="Close settings">×</button>
+        </div>
 
-            <label class="field">
-              <span>Font size (px)</span>
-              <input id="setFontSize" type="number" min="10" step="1" />
-            </label>
+        <div class="modalBody">
+          <div class="settingsGrid">
+            <div class="field">
+              <label for="setTyping">Typing speed (ms/char)</label>
+              <input id="setTyping" type="number" class="fieldInput" min="1" max="200" step="1" />
+            </div>
 
-            <label class="field">
-              <span>Terminal padding (px)</span>
-              <input id="setPad" type="number" min="8" step="1" />
-            </label>
+            <div class="field">
+              <label for="setFontSize">Font size (px)</label>
+              <input id="setFontSize" type="number" class="fieldInput" min="10" max="28" step="1" />
+            </div>
 
-            <label class="field">
-              <span>GIF scale (1–3)</span>
-              <input id="setScale" type="number" min="1" max="3" step="1" />
-            </label>
+            <div class="field">
+              <label for="setPad">Terminal padding (px)</label>
+              <input id="setPad" type="number" class="fieldInput" min="8" max="40" step="1" />
+            </div>
 
-            <label class="field">
-              <span>GIF quality (1–30, lower = better)</span>
-              <input id="setQuality" type="number" min="1" max="30" step="1" />
-            </label>
+            <div class="field">
+              <label for="setScale">GIF scale (1–3)</label>
+              <input id="setScale" type="number" class="fieldInput" min="1" max="3" step="1" />
+            </div>
 
-            <label class="field">
-              <span>Video FPS</span>
-              <input id="setFps" type="number" min="10" max="60" step="1" />
-            </label>
+            <div class="field">
+              <label for="setQuality">GIF quality (1–30, lower = better)</label>
+              <input id="setQuality" type="number" class="fieldInput" min="1" max="30" step="1" />
+            </div>
 
-            <label class="field">
-              <span>Video time scale (0.25–2.0)</span>
-              <input id="setVideoScale" type="number" min="0.25" max="2" step="0.25" />
-            </label>
+            <div class="field">
+              <label for="setFps">Video FPS</label>
+              <input id="setFps" type="number" class="fieldInput" min="10" max="60" step="1" />
+            </div>
 
-            <label class="field">
-              <span>Video bitrate (Mbps)</span>
-              <input id="setBitrate" type="number" min="1" max="20" step="1" />
-            </label>
+            <div class="field">
+              <label for="setVideoScale">Video time scale (0.25–2.0)</label>
+              <input id="setVideoScale" type="number" class="fieldInput" min="0.25" max="2" step="0.05" />
+            </div>
 
-            <label class="field">
-              <span>Theme</span>
-              <select id="setTheme">
+            <div class="field">
+              <label for="setBitrate">Video bitrate (Mbps)</label>
+              <input id="setBitrate" type="number" class="fieldInput" min="1" max="20" step="1" />
+            </div>
+
+            <div class="field">
+              <label for="setTheme">Theme</label>
+              <select id="setTheme" class="fieldInput">
                 <option value="midnight">Midnight</option>
                 <option value="charcoal">Charcoal</option>
               </select>
-            </label>
+            </div>
           </div>
 
           <div class="divider"></div>
 
-          <div class="presetBlock">
-            <div class="presetTitle">Presets (Import / Export JSON)</div>
-
-            <div class="presetBtns">
-              <button class="btn btn--dark" id="btnCopyJson" type="button">Copy JSON</button>
-              <button class="btn btn--dark" id="btnDownloadJson" type="button">Download JSON</button>
-
-              <label class="fileBtn">
-                <input id="fileJson" type="file" accept="application/json" />
-                <span class="btn btn--dark">Upload JSON</span>
-              </label>
+          <div class="presetsBlock">
+            <div class="presetsHeader">
+              <div class="presetsTitle">Presets (Import/Export JSON)</div>
+              <div class="presetsButtons">
+                <button id="btnCopyJson" class="btn btnDark" type="button">Copy JSON</button>
+                <button id="btnDownloadJson" class="btn btnDark" type="button">Download JSON</button>
+                <label class="btn btnDark fileBtn" title="Choose a preset JSON file">
+                  Choose File
+                  <input id="fileJson" type="file" accept="application/json" hidden />
+                </label>
+              </div>
             </div>
 
-            <textarea id="presetTextarea" class="presetTextarea" spellcheck="false"></textarea>
+            <textarea
+              id="presetTextarea"
+              class="presetTextarea"
+              spellcheck="false"
+              placeholder="Preset JSON will appear here…"
+            ></textarea>
 
-            <div class="presetBtns">
-              <button class="btn btn--blue" id="btnLoadJson" type="button">Load JSON into editor</button>
-              <button class="btn btn--dark" id="btnResetDemo" type="button">Reset demo</button>
+            <div class="presetsFooter">
+              <button id="btnLoadJson" class="btn btnBlue" type="button">Load JSON into editor</button>
+              <button id="btnResetDemo" class="btn btnDark" type="button">Reset demo</button>
+
+              <div class="spacer"></div>
+
+              <button id="btnSaveSettings" class="btn btnBlue" type="button">Save</button>
             </div>
-          </div>
-
-          <div class="modal__foot">
-            <button class="btn btn--blue" id="btnSaveSettings" type="button">Save</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- EXPORT MODAL -->
-      <div class="modal" id="exportModal" hidden>
-        <div class="modal__card exportCard">
-          <div class="modal__head">
-            <div class="modal__title">Export</div>
-            <button class="iconBtn" id="closeExport" type="button" aria-label="Close">✕</button>
-          </div>
-
-          <div class="exportChoices">
-            <button class="btn btn--green" id="btnExportGif" type="button">Export GIF</button>
-            <button class="btn btn--blue" id="btnExportMp4" type="button">Export MP4</button>
-          </div>
-
-          <div class="exportNote">
-            MP4 export depends on browser support. If MP4 isn’t supported, it will export WebM automatically.
-          </div>
-
-          <div class="modal__foot exportFoot">
-            <div class="exportMiniStatus" id="exportMiniStatus">Ready</div>
-            <a class="btn btn--dark" id="downloadLinkModal" href="#" download hidden>Download</a>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- cache-bust js -->
-    <script src="./app.js?v=4"></script>
+    <!-- Export Modal -->
+    <div id="exportModal" class="modalOverlay" hidden>
+      <div class="modalCard" role="dialog" aria-modal="true" aria-label="Export">
+        <div class="modalHeader">
+          <div class="modalTitle">Export</div>
+          <button id="closeExport" class="iconBtn" type="button" aria-label="Close export">×</button>
+        </div>
+
+        <div class="modalBody">
+          <div class="exportButtons">
+            <button id="btnExportGif" class="btn btnGreen" type="button">Export GIF</button>
+            <button id="btnExportMp4" class="btn btnBlue" type="button">Export MP4</button>
+          </div>
+
+          <p class="exportHint">
+            MP4 export depends on browser support. If MP4 isn’t supported, it will export WebM automatically.
+          </p>
+
+          <div class="exportStatusRow">
+            <div id="exportMiniStatus" class="exportMiniStatus">Ready</div>
+            <a id="downloadLinkModal" class="downloadLink" href="#" hidden>Download</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- libs -->
+    <script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
+    <script src="./app.js"></script>
+
+    <script>
+      const y = document.getElementById("footerYear");
+      if (y) y.textContent = new Date().getFullYear();
+    </script>
   </body>
 </html>
