@@ -168,9 +168,10 @@ body {
   color: #fff;
 }
 
+/* Export row (FIX: respect HTML `hidden`) */
 .exportRow {
   width: min(720px, 94vw);
-  display: flex;
+  display: none; /* FIX */
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
@@ -178,6 +179,10 @@ body {
   background: rgba(255, 255, 255, 0.68);
   border: 1px solid rgba(2, 8, 23, 0.08);
 }
+.exportRow:not([hidden]) {
+  display: flex; /* FIX */
+}
+
 .exportRow__left {
   display: flex;
   align-items: center;
@@ -364,16 +369,20 @@ body {
   min-height: 110px;
 }
 
-/* Modal */
+/* Modal (FIX: respect HTML `hidden`) */
 .modal {
   position: fixed;
   inset: 0;
   background: rgba(2, 8, 23, 0.45);
-  display: flex;
+  display: none; /* FIX */
   align-items: center;
   justify-content: center;
   padding: 18px;
 }
+.modal:not([hidden]) {
+  display: flex; /* FIX */
+}
+
 .modal__card {
   width: min(820px, 96vw);
   background: #fff;
