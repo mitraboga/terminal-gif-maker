@@ -26,6 +26,13 @@
   box-sizing: border-box;
 }
 
+/* ✅ CRITICAL FIX:
+   Author CSS was overriding the native [hidden] behavior.
+   This forces hidden elements (modals, download links, export row, etc.) to actually disappear. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
