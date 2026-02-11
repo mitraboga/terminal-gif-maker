@@ -1,9 +1,9 @@
 /* Terminal Gif Maker (GitHub Pages friendly)
-   Upgrades:
-   - UI closer to screenshot + bottom multiline bar (row selection)
-   - Import/Export JSON presets
-   - ANSI colors (SGR: 16/bright/256/truecolor; fg/bg; bold/underline)
-   - MP4 export (best effort) + WebM fallback via MediaRecorder
+   Fixes:
+   - Modals are mutually exclusive (Settings and Export can’t stack)
+   - Both modals forced closed on page load
+   - ESC closes modal
+   - Overlay click closes modal
 */
 
 const STORAGE_KEY = "tgm_state_v2";
@@ -18,7 +18,7 @@ const DEFAULT_STATE = {
     gifQuality: 10,
 
     videoFps: 30,
-    videoTimeScale: 1.0, // 1.0 = real-time; 0.5 = twice as fast; 2.0 = slower
+    videoTimeScale: 1.0,
     videoBitrateMbps: 8,
 
     theme: "midnight",
@@ -127,6 +127,75 @@ const downloadLinkModal = document.getElementById("downloadLinkModal");
 
 let simRunning = false;
 
+/** ---------- Modal control (THE FIX) ---------- */
+function anyModalOpen() {
+  return !settingsModal.hidden || !exportModal.hidden;
+}
+
+function lockBodyScroll(locked) {
+  document.body.style.overflow = locked ? "hidden" : "";
+}
+
+function closeSettingsModal() {
+  settingsModal.hidden = true;
+  if (!anyModalOpen()) lockBodyScroll(false);
+}
+
+function closeExportModal() {
+  exportModal.hidden = true;
+  if (!anyModalOpen()) lockBodyScroll(false);
+}
+
+function closeAllModals() {
+  settingsModal.hidden = true;
+  exportModal.hidden = true;
+  lockBodyScroll(false);
+}
+
+function openSettings() {
+  // Make sure export is NOT open
+  closeExportModal();
+
+  setTyping.value = String(state.settings.typingMsPerChar);
+  setFontSize.value = String(state.settings.fontSizePx);
+  setPad.value = String(state.settings.paddingPx);
+  setScale.value = String(state.settings.gifScale);
+  setQuality.value = String(state.settings.gifQuality);
+  setFps.value = String(state.settings.videoFps);
+  setVideoScale.value = String(state.settings.videoTimeScale);
+  setBitrate.value = String(state.settings.videoBitrateMbps);
+  setTheme.value = state.settings.theme;
+
+  presetTextarea.value = getPresetJsonString();
+
+  settingsModal.hidden = false;
+  lockBodyScroll(true);
+}
+
+function openExport() {
+  // Make sure settings is NOT open
+  closeSettingsModal();
+
+  setExportModalUI({ status: "Ready", downloadableUrl: null, filename: "" });
+  exportModal.hidden = false;
+  lockBodyScroll(true);
+}
+
+/* ESC closes whichever modal is open */
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!exportModal.hidden) closeExportModal();
+  else if (!settingsModal.hidden) closeSettingsModal();
+});
+
+/* Clicking overlay closes modal (clicking card does not) */
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
+});
+exportModal.addEventListener("click", (e) => {
+  if (e.target === exportModal) closeExportModal();
+});
+
 /** ---------- UI helpers ---------- */
 function setExportUI({ show, status, busy, downloadableUrl, filename }) {
   exportRow.hidden = !show;
@@ -166,16 +235,6 @@ function applySettingsToPreview() {
 applySettingsToPreview();
 
 /** ---------- ANSI parsing ---------- */
-/*
-  Supports:
-    - 0 reset
-    - 1 bold, 22 normal
-    - 4 underline, 24 underline off
-    - 30-37 fg, 90-97 bright fg
-    - 40-47 bg, 100-107 bright bg
-    - 38;5;n / 48;5;n (256 color)
-    - 38;2;r;g;b / 48;2;r;g;b (truecolor)
-*/
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 const BASIC_16 = {
@@ -219,7 +278,6 @@ const BG_16 = {
 };
 
 function xterm256ToRgb(n) {
-  // 0-15: basic colors (we approximate with BASIC_16/BG_16 vibe)
   if (n >= 0 && n <= 15) {
     const map = [
       "#000000",
@@ -241,32 +299,24 @@ function xterm256ToRgb(n) {
     ];
     return map[n];
   }
-
-  // 16-231: 6x6x6 cube
   if (n >= 16 && n <= 231) {
     const idx = n - 16;
     const r = Math.floor(idx / 36);
     const g = Math.floor((idx % 36) / 6);
     const b = idx % 6;
-
     const conv = (c) => (c === 0 ? 0 : 55 + c * 40);
     return `rgb(${conv(r)},${conv(g)},${conv(b)})`;
   }
-
-  // 232-255: grayscale ramp
   if (n >= 232 && n <= 255) {
     const v = 8 + (n - 232) * 10;
     return `rgb(${v},${v},${v})`;
   }
-
   return null;
 }
 
 function parseAnsiToSegments(input) {
-  // returns array of { text, fg, bg, bold, underline }
   const out = [];
   let lastIndex = 0;
-
   let style = { fg: null, bg: null, bold: false, underline: false };
 
   function pushText(txt) {
@@ -279,15 +329,12 @@ function parseAnsiToSegments(input) {
     const idx = m.index ?? 0;
     const esc = m[0];
 
-    // text before this escape
     pushText(input.slice(lastIndex, idx));
     lastIndex = idx + esc.length;
 
-    // parse SGR params
-    const inside = esc.slice(2, -1); // remove \x1b[  and trailing m
+    const inside = esc.slice(2, -1);
     const params = inside.length ? inside.split(";").map((x) => safeInt(x, 0)) : [0];
 
-    // apply params
     let i = 0;
     while (i < params.length) {
       const p = params[i];
@@ -299,10 +346,9 @@ function parseAnsiToSegments(input) {
       else if (p === 24) style.underline = false;
       else if ((p >= 30 && p <= 37) || (p >= 90 && p <= 97)) style.fg = BASIC_16[p] || style.fg;
       else if ((p >= 40 && p <= 47) || (p >= 100 && p <= 107)) style.bg = BG_16[p] || style.bg;
-      else if (p === 39) style.fg = null; // default fg
-      else if (p === 49) style.bg = null; // default bg
+      else if (p === 39) style.fg = null;
+      else if (p === 49) style.bg = null;
       else if (p === 38 || p === 48) {
-        // extended color
         const isFg = p === 38;
         const mode = params[i + 1];
 
@@ -335,20 +381,17 @@ function parseAnsiToSegments(input) {
     }
   }
 
-  // trailing text
   pushText(input.slice(lastIndex));
   return out;
 }
 
 function tokenizeAnsi(raw) {
-  // tokens: {type:'esc'|'char', value:string}
   const tokens = [];
   let i = 0;
 
   while (i < raw.length) {
     const ch = raw[i];
     if (ch === "\x1b" && raw[i + 1] === "[") {
-      // find 'm'
       let j = i + 2;
       while (j < raw.length && raw[j] !== "m") j++;
       if (j < raw.length) {
@@ -373,7 +416,7 @@ function resetTerminal() {
 }
 
 function isCommandStep(step) {
-  return (step.path || "").trim().length > 0; // matches screenshot style: blank path = output
+  return (step.path || "").trim().length > 0;
 }
 
 function ensurePromptLine(path) {
@@ -407,7 +450,6 @@ function makeSpan(seg, defaultColor) {
 function appendAnsiSegments(container, rawText, defaultColor) {
   const segments = parseAnsiToSegments(rawText || "");
   for (const seg of segments) {
-    // support newlines by splitting into separate DOM lines
     const parts = seg.text.split("\n");
     for (let i = 0; i < parts.length; i++) {
       if (parts[i].length) container.appendChild(makeSpan({ ...seg, text: parts[i] }, defaultColor));
@@ -419,7 +461,6 @@ function appendAnsiSegments(container, rawText, defaultColor) {
 function renderTerminalPreview() {
   terminalScreen.innerHTML = "";
 
-  // If empty, show a blank line with cursor
   if (renderLines.length === 0) {
     const line = document.createElement("div");
     line.className = "termLine";
@@ -498,7 +539,6 @@ function measureText(ctx, txt) {
 
 function drawTextChunk(ctx, txt, x, y, fg, bg, fontSize) {
   if (!txt) return 0;
-
   const w = measureText(ctx, txt);
 
   if (bg) {
@@ -524,12 +564,10 @@ function drawSegmentsWrapped(ctx, segments, xStart, yStart, maxWidth, lineH, fon
     const fg = seg.fg || defaultFg;
     const bg = seg.bg || null;
 
-    // handle newlines inside a segment
     const parts = (seg.text || "").split("\n");
     for (let pi = 0; pi < parts.length; pi++) {
       const text = parts[pi];
 
-      // draw with char wrapping
       for (let i = 0; i < text.length; i++) {
         const ch = text[i];
         const w = measureText(ctx, ch);
@@ -567,18 +605,15 @@ function drawTerminalToCanvas(ctx, w, h, scale) {
       const path = ln.path || "/home";
       const dollar = " $ ";
 
-      // path (green)
       let x = pad;
       ctx.fillStyle = "#39d353";
       ctx.fillText(path, x, y);
       x += measureText(ctx, path);
 
-      // dollar (gray)
       ctx.fillStyle = "#b8c2d1";
       ctx.fillText(dollar, x, y);
       x += measureText(ctx, dollar);
 
-      // cmd (ansi)
       const segs = parseAnsiToSegments(ln.rawText || "");
       drawSegmentsWrapped(ctx, segs, x, y, maxWidth - (x - pad), lineH, fontSize, "#e5e7eb");
     } else {
@@ -589,17 +624,17 @@ function drawTerminalToCanvas(ctx, w, h, scale) {
     y += lineH;
   }
 
-  // cursor block (bottom-ish)
   ctx.fillStyle = "#39d353";
-  ctx.fillRect(pad, Math.min(h - pad - lineH, y) + Math.floor(fontSize * 0.15), Math.floor(fontSize * 0.55), Math.floor(fontSize * 1.05));
+  ctx.fillRect(
+    pad,
+    Math.min(h - pad - lineH, y) + Math.floor(fontSize * 0.15),
+    Math.floor(fontSize * 0.55),
+    Math.floor(fontSize * 1.05)
+  );
 }
 
 /** ---------- Simulation engine ---------- */
 async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, timeScale }) {
-  // mode:
-  //  - "preview" (real-time sleep)
-  //  - "gif" (no sleep; add frames with delays)
-  //  - "video" (real-time sleep; draw to export canvas)
   const typingDelay = clamp(state.settings.typingMsPerChar, 1, 200);
   const scaled = clamp(timeScale ?? 1, 0.05, 5);
 
@@ -609,9 +644,6 @@ async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, t
     renderTerminalPreview();
 
     if (mode === "gif" && gif) {
-      // draw to temp canvas for gif
-      // (gif.js needs a canvas to snapshot)
-      // We'll use the export canvasCtx if provided; else create local
       if (canvasCtx) {
         drawTerminalToCanvas(canvasCtx, canvasW, canvasH, canvasScale);
         gif.addFrame(canvasCtx.canvas, { copy: true, delay: clamp(delayMs, 0, 600000) });
@@ -623,7 +655,6 @@ async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, t
     }
   }
 
-  // initial
   if (mode === "gif") drawAndMaybeFrame(200);
   else drawAndMaybeFrame(0);
 
@@ -642,7 +673,6 @@ async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, t
         built += t.value;
         line.rawText = built;
 
-        // only delay on visible characters
         if (t.type === "char") {
           if (mode === "gif") {
             drawAndMaybeFrame(typingDelay);
@@ -653,7 +683,6 @@ async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, t
         }
       }
 
-      // ensure at least one frame after typing finishes
       if (mode === "gif") drawAndMaybeFrame(40);
       else drawAndMaybeFrame(0);
     } else {
@@ -665,18 +694,15 @@ async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, t
     }
 
     const hold = clamp(step.timeout ?? 0, 0, 600000);
-    if (mode === "gif") {
-      drawAndMaybeFrame(hold);
-    } else {
-      await sleep(hold * scaled);
-    }
+    if (mode === "gif") drawAndMaybeFrame(hold);
+    else await sleep(hold * scaled);
   }
 
   if (mode === "gif") drawAndMaybeFrame(400);
   else drawAndMaybeFrame(0);
 }
 
-/** ---------- Rows UI (closer to screenshot) ---------- */
+/** ---------- Rows UI ---------- */
 function createSwitch(checked, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "switch";
@@ -715,7 +741,6 @@ function setSelectedIndex(idx) {
 function syncMultilineEditorFromSelection() {
   const step = state.steps[state.selectedIndex];
   multilineEditor.value = step?.text ?? "";
-
   multilineEditor.classList.toggle("big", !!state.multiline);
 }
 
@@ -739,9 +764,8 @@ function renderRows() {
     const cmd = document.createElement("input");
     cmd.className = "input";
     cmd.placeholder = "command or output text…";
-    cmd.value = (step.text ?? "").split("\n")[0]; // preview first line in the row
+    cmd.value = (step.text ?? "").split("\n")[0];
     cmd.addEventListener("input", () => {
-      // if multiline enabled, we still allow editing first line in-row
       const current = step.text ?? "";
       const lines = current.split("\n");
       lines[0] = cmd.value;
@@ -863,35 +887,6 @@ function downloadTextFile(filename, text, mime = "application/json") {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-/** ---------- Modals ---------- */
-function openSettings() {
-  setTyping.value = String(state.settings.typingMsPerChar);
-  setFontSize.value = String(state.settings.fontSizePx);
-  setPad.value = String(state.settings.paddingPx);
-  setScale.value = String(state.settings.gifScale);
-  setQuality.value = String(state.settings.gifQuality);
-  setFps.value = String(state.settings.videoFps);
-  setVideoScale.value = String(state.settings.videoTimeScale);
-  setBitrate.value = String(state.settings.videoBitrateMbps);
-  setTheme.value = state.settings.theme;
-
-  presetTextarea.value = getPresetJsonString();
-
-  settingsModal.hidden = false;
-}
-
-function closeSettingsModal() {
-  settingsModal.hidden = true;
-}
-
-function openExport() {
-  setExportModalUI({ status: "Ready", downloadableUrl: null, filename: "" });
-  exportModal.hidden = false;
-}
-function closeExportModal() {
-  exportModal.hidden = true;
-}
-
 /** ---------- Exports ---------- */
 async function exportGif() {
   if (simRunning) return;
@@ -977,11 +972,9 @@ async function exportMp4OrWebm() {
     const timeScale = clamp(safeFloat(state.settings.videoTimeScale, 1.0), 0.25, 2.0);
     const bitrate = clamp(safeInt(state.settings.videoBitrateMbps, 8), 1, 20) * 1_000_000;
 
-    // Use export canvas sized from preview (same as GIF scale)
     const { canvas, scale } = makeCanvasForExport();
     const ctx = canvas.getContext("2d");
 
-    // Initial draw
     resetTerminal();
     drawTerminalToCanvas(ctx, canvas.width, canvas.height, scale);
 
@@ -998,7 +991,6 @@ async function exportMp4OrWebm() {
 
     recorder.start();
 
-    // run sim in real-time (scaled)
     await simulate({
       mode: "video",
       canvasCtx: ctx,
@@ -1008,10 +1000,8 @@ async function exportMp4OrWebm() {
       timeScale,
     });
 
-    // Give the recorder a small tail
     await sleep(250);
     recorder.stop();
-
     await done;
 
     const blob = new Blob(chunks, { type: mimeType });
@@ -1028,11 +1018,12 @@ async function exportMp4OrWebm() {
   simRunning = false;
 }
 
-/** ---------- Events ---------- */
+/** ---------- Button events ---------- */
 btnSim.addEventListener("click", async () => {
   if (simRunning) return;
   simRunning = true;
 
+  // never auto-open any modal on simulate
   setExportUI({ show: false, status: "", busy: false, downloadableUrl: null });
 
   try {
@@ -1042,18 +1033,17 @@ btnSim.addEventListener("click", async () => {
   }
 });
 
-btnExport.addEventListener("click", openExport);
-btnSettings.addEventListener("click", openSettings);
+btnExport.addEventListener("click", () => {
+  // Export modal should appear ONLY when user clicks Export
+  openExport();
+});
+
+btnSettings.addEventListener("click", () => {
+  openSettings();
+});
 
 closeSettings.addEventListener("click", closeSettingsModal);
-settingsModal.addEventListener("click", (e) => {
-  if (e.target === settingsModal) closeSettingsModal();
-});
-
 closeExport.addEventListener("click", closeExportModal);
-exportModal.addEventListener("click", (e) => {
-  if (e.target === exportModal) closeExportModal();
-});
 
 btnExportGif.addEventListener("click", exportGif);
 btnExportMp4.addEventListener("click", exportMp4OrWebm);
@@ -1102,7 +1092,6 @@ multilineEditor.addEventListener("input", () => {
   if (!step) return;
 
   if (!state.multiline) {
-    // If multiline is OFF, prevent newline edits (keep first line only)
     step.text = multilineEditor.value.replace(/\r?\n/g, " ");
     multilineEditor.value = step.text;
   } else {
@@ -1110,7 +1099,7 @@ multilineEditor.addEventListener("input", () => {
   }
 
   saveState();
-  renderRows(); // refresh row preview first line
+  renderRows();
 });
 
 btnCopyJson.addEventListener("click", async () => {
@@ -1154,7 +1143,18 @@ btnLoadJson.addEventListener("click", () => {
   }
 });
 
-/** ---------- Init ---------- */
-renderRows();
-syncMultilineEditorFromSelection();
-resetTerminal();
+/** ---------- Init (FORCE clean state) ---------- */
+function init() {
+  // IMPORTANT: force modals closed on load so the editor is usable
+  closeAllModals();
+
+  // keep export row hidden until an export happens
+  exportRow.hidden = true;
+
+  applySettingsToPreview();
+  renderRows();
+  syncMultilineEditorFromSelection();
+  resetTerminal();
+}
+
+init();
