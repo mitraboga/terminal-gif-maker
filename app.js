@@ -1,6 +1,6 @@
 /* Terminal Gif Maker (GitHub Pages friendly)
    FIXES:
-   - GIF export: create SAME-ORIGIN worker via Blob URL (avoids worker/CORS issues on Pages)
+   - GIF export: ALWAYS use SAME-ORIGIN worker (./gif.worker.js) to avoid Worker CORS blocks on GitHub Pages
    - show real error message in UI
    - modals mutually exclusive + closed on load (kept)
 */
@@ -857,26 +857,33 @@ function downloadTextFile(filename, text, mime = "application/json") {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-/** ---------- GIF WORKER (SAME-ORIGIN BLOB) ---------- */
-const GIF_WORKER_CDN = "https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js";
-let gifWorkerBlobUrl = null;
+/** ---------- GIF WORKER (ALWAYS SAME-ORIGIN) ---------- */
+/**
+ * Put `gif.worker.js` next to `index.html` in your repo.
+ * URL must be SAME ORIGIN for Web Workers on GitHub Pages.
+ */
+const LOCAL_GIF_WORKER_PATH = "./gif.worker.js";
+let localGifWorkerBlobUrl = null;
 
 async function getGifWorkerScriptUrl() {
-  if (gifWorkerBlobUrl) return gifWorkerBlobUrl;
+  if (localGifWorkerBlobUrl) return localGifWorkerBlobUrl;
 
-  // If fetch fails (offline, blocked), we still return CDN as fallback.
-  try {
-    const res = await fetch(GIF_WORKER_CDN, { cache: "reload" });
-    if (!res.ok) throw new Error(`Worker fetch failed (${res.status})`);
-    const js = await res.text();
+  // Resolve to the correct project-pages path, e.g.
+  // https://mitraboga.github.io/terminal-gif-maker/gif.worker.js
+  const absoluteUrl = new URL(LOCAL_GIF_WORKER_PATH, document.baseURI).toString();
 
-    const blob = new Blob([js], { type: "application/javascript" });
-    gifWorkerBlobUrl = URL.createObjectURL(blob);
-    return gifWorkerBlobUrl;
-  } catch (e) {
-    console.warn("Falling back to CDN worker URL:", e);
-    return GIF_WORKER_CDN;
+  // Fetch same-origin worker and convert to Blob URL (extra-safe)
+  const res = await fetch(absoluteUrl, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(
+      `Missing gif.worker.js. Expected to find it at: ${absoluteUrl} (status ${res.status}). ` +
+      `Download it from gif.js.optimized@1.0.1 and commit it next to index.html.`
+    );
   }
+  const js = await res.text();
+  const blob = new Blob([js], { type: "application/javascript" });
+  localGifWorkerBlobUrl = URL.createObjectURL(blob);
+  return localGifWorkerBlobUrl;
 }
 
 /** ---------- Exports ---------- */
@@ -901,6 +908,7 @@ async function exportGif() {
     setExportUI({ show: true, status: "Exporting GIF…", busy: true, downloadableUrl: null });
     setExportModalUI({ status: "Exporting GIF…", downloadableUrl: null, filename: "" });
 
+    // ✅ SAME-ORIGIN worker every time
     const workerScript = await getGifWorkerScriptUrl();
 
     const { canvas, scale } = makeCanvasForExport();
