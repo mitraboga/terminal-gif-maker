@@ -1,10 +1,14 @@
-/* Terminal Gif Maker (static GitHub Pages friendly)
-   - Simulate typing/output in a terminal preview
-   - Export as GIF using gif.js (runs fully in-browser)
+/* Terminal Gif Maker (GitHub Pages friendly)
+   Upgrades:
+   - UI closer to screenshot + bottom multiline bar (row selection)
+   - Import/Export JSON presets
+   - ANSI colors (SGR: 16/bright/256/truecolor; fg/bg; bold/underline)
+   - MP4 export (best effort) + WebM fallback via MediaRecorder
 */
 
-const STORAGE_KEY = "tgm_state_v1";
+const STORAGE_KEY = "tgm_state_v2";
 
+/** ---------- Defaults ---------- */
 const DEFAULT_STATE = {
   settings: {
     typingMsPerChar: 28,
@@ -12,27 +16,40 @@ const DEFAULT_STATE = {
     paddingPx: 18,
     gifScale: 2,
     gifQuality: 10,
+
+    videoFps: 30,
+    videoTimeScale: 1.0, // 1.0 = real-time; 0.5 = twice as fast; 2.0 = slower
+    videoBitrateMbps: 8,
+
     theme: "midnight",
   },
   multiline: false,
+  selectedIndex: 0,
   steps: [
-    { path: "/home", text: "cat index.js", typing: true, timeout: 10, kind: "cmd" },
-    { path: "", text: "const helper = require('helper.js')", typing: false, timeout: 0, kind: "out" },
-    { path: "", text: "helper.startValidation()", typing: false, timeout: 0, kind: "out" },
-    { path: "/home", text: "node index.js", typing: true, timeout: 50, kind: "cmd" },
-    { path: "", text: "validation started!", typing: false, timeout: 100, kind: "out" },
-    { path: "", text: "validation completed!", typing: false, timeout: 300, kind: "out" },
-    { path: "/home", text: "", typing: false, timeout: 50, kind: "cmd" },
-    { path: "", text: "git commit --amend", typing: true, timeout: 150, kind: "cmd" },
+    { path: "/home", text: "cat index.js", typing: true, timeout: 10 },
+    { path: "", text: "const helper = require('helper.js')", typing: false, timeout: 0 },
+    { path: "", text: "helper.startValidation()", typing: false, timeout: 0 },
+    { path: "/home", text: "node index.js", typing: true, timeout: 50 },
+    { path: "", text: "validation started!", typing: false, timeout: 100 },
+    { path: "", text: "validation completed!", typing: false, timeout: 300 },
+    { path: "/home", text: "", typing: false, timeout: 50 },
+    { path: "", text: "git commit --amend", typing: true, timeout: 150 },
   ],
 };
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
-
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
+}
+function safeInt(v, fallback = 0) {
+  const n = parseInt(String(v ?? ""), 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+function safeFloat(v, fallback = 1) {
+  const n = parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function loadState() {
@@ -41,27 +58,29 @@ function loadState() {
     if (!raw) return structuredClone(DEFAULT_STATE);
     const parsed = JSON.parse(raw);
 
-    // gentle merge for forward-compat
-    return {
+    const merged = {
       ...structuredClone(DEFAULT_STATE),
       ...parsed,
       settings: { ...structuredClone(DEFAULT_STATE.settings), ...(parsed.settings || {}) },
       steps: Array.isArray(parsed.steps) ? parsed.steps : structuredClone(DEFAULT_STATE.steps),
     };
+
+    merged.selectedIndex = clamp(safeInt(merged.selectedIndex, 0), 0, merged.steps.length - 1);
+    return merged;
   } catch {
     return structuredClone(DEFAULT_STATE);
   }
 }
-
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 let state = loadState();
 
-// DOM
+/** ---------- DOM ---------- */
 const terminalScreen = document.getElementById("terminalScreen");
 const rowsEl = document.getElementById("rows");
+
 const btnSim = document.getElementById("btnSim");
 const btnExport = document.getElementById("btnExport");
 const btnSettings = document.getElementById("btnSettings");
@@ -71,34 +90,45 @@ const spinner = document.getElementById("spinner");
 const exportStatus = document.getElementById("exportStatus");
 const downloadLink = document.getElementById("downloadLink");
 
-const modal = document.getElementById("modal");
-const closeModal = document.getElementById("closeModal");
+/* bottom multiline bar */
+const multilineToggle = document.getElementById("multilineToggle");
+const multilineEditor = document.getElementById("multilineEditor");
+
+/* settings modal */
+const settingsModal = document.getElementById("settingsModal");
+const closeSettings = document.getElementById("closeSettings");
 const btnSaveSettings = document.getElementById("btnSaveSettings");
-const btnReset = document.getElementById("btnReset");
+const btnResetDemo = document.getElementById("btnResetDemo");
 
 const setTyping = document.getElementById("setTyping");
 const setFontSize = document.getElementById("setFontSize");
 const setPad = document.getElementById("setPad");
 const setScale = document.getElementById("setScale");
 const setQuality = document.getElementById("setQuality");
+const setFps = document.getElementById("setFps");
+const setVideoScale = document.getElementById("setVideoScale");
+const setBitrate = document.getElementById("setBitrate");
 const setTheme = document.getElementById("setTheme");
 
-const multilineToggle = document.getElementById("multilineToggle");
+/* presets */
+const presetTextarea = document.getElementById("presetTextarea");
+const btnCopyJson = document.getElementById("btnCopyJson");
+const btnDownloadJson = document.getElementById("btnDownloadJson");
+const btnLoadJson = document.getElementById("btnLoadJson");
+const fileJson = document.getElementById("fileJson");
 
-// terminal render model (what you see + what we draw into GIF)
-let renderLines = []; // each: {type:'prompt'|'out', path, text}
-let cursorOn = true;
+/* export modal */
+const exportModal = document.getElementById("exportModal");
+const closeExport = document.getElementById("closeExport");
+const btnExportGif = document.getElementById("btnExportGif");
+const btnExportMp4 = document.getElementById("btnExportMp4");
+const exportMiniStatus = document.getElementById("exportMiniStatus");
+const downloadLinkModal = document.getElementById("downloadLinkModal");
+
 let simRunning = false;
 
-// Apply settings to preview
-function applySettingsToPreview() {
-  terminalScreen.style.fontSize = `${state.settings.fontSizePx}px`;
-  terminalScreen.style.padding = `${state.settings.paddingPx}px`;
-  terminalScreen.dataset.theme = state.settings.theme;
-}
-applySettingsToPreview();
-
-function setExportUI({ show, status, busy, downloadableUrl }) {
+/** ---------- UI helpers ---------- */
+function setExportUI({ show, status, busy, downloadableUrl, filename }) {
   exportRow.hidden = !show;
   spinner.hidden = !busy;
   exportStatus.textContent = status || "Ready";
@@ -106,20 +136,547 @@ function setExportUI({ show, status, busy, downloadableUrl }) {
   if (downloadableUrl) {
     downloadLink.hidden = false;
     downloadLink.href = downloadableUrl;
+    downloadLink.download = filename || "terminal.gif";
+    downloadLink.textContent = "Download";
   } else {
     downloadLink.hidden = true;
     downloadLink.href = "#";
   }
 }
 
-function iconBtn(label) {
-  const b = document.createElement("button");
-  b.className = "iconBtn";
-  b.type = "button";
-  b.textContent = label;
-  return b;
+function setExportModalUI({ status, downloadableUrl, filename }) {
+  exportMiniStatus.textContent = status || "Ready";
+
+  if (downloadableUrl) {
+    downloadLinkModal.hidden = false;
+    downloadLinkModal.href = downloadableUrl;
+    downloadLinkModal.download = filename || "terminal.gif";
+    downloadLinkModal.textContent = `Download ${filename || ""}`.trim();
+  } else {
+    downloadLinkModal.hidden = true;
+    downloadLinkModal.href = "#";
+  }
 }
 
+function applySettingsToPreview() {
+  terminalScreen.style.fontSize = `${state.settings.fontSizePx}px`;
+  terminalScreen.style.padding = `${state.settings.paddingPx}px`;
+  terminalScreen.dataset.theme = state.settings.theme;
+}
+applySettingsToPreview();
+
+/** ---------- ANSI parsing ---------- */
+/*
+  Supports:
+    - 0 reset
+    - 1 bold, 22 normal
+    - 4 underline, 24 underline off
+    - 30-37 fg, 90-97 bright fg
+    - 40-47 bg, 100-107 bright bg
+    - 38;5;n / 48;5;n (256 color)
+    - 38;2;r;g;b / 48;2;r;g;b (truecolor)
+*/
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+const BASIC_16 = {
+  30: "#111827",
+  31: "#ef4444",
+  32: "#22c55e",
+  33: "#eab308",
+  34: "#3b82f6",
+  35: "#a855f7",
+  36: "#06b6d4",
+  37: "#e5e7eb",
+
+  90: "#6b7280",
+  91: "#f87171",
+  92: "#4ade80",
+  93: "#facc15",
+  94: "#60a5fa",
+  95: "#c084fc",
+  96: "#22d3ee",
+  97: "#f3f4f6",
+};
+
+const BG_16 = {
+  40: "#111827",
+  41: "#7f1d1d",
+  42: "#14532d",
+  43: "#713f12",
+  44: "#1e3a8a",
+  45: "#581c87",
+  46: "#155e75",
+  47: "#e5e7eb",
+
+  100: "#374151",
+  101: "#ef4444",
+  102: "#22c55e",
+  103: "#eab308",
+  104: "#3b82f6",
+  105: "#a855f7",
+  106: "#06b6d4",
+  107: "#f3f4f6",
+};
+
+function xterm256ToRgb(n) {
+  // 0-15: basic colors (we approximate with BASIC_16/BG_16 vibe)
+  if (n >= 0 && n <= 15) {
+    const map = [
+      "#000000",
+      "#800000",
+      "#008000",
+      "#808000",
+      "#000080",
+      "#800080",
+      "#008080",
+      "#c0c0c0",
+      "#808080",
+      "#ff0000",
+      "#00ff00",
+      "#ffff00",
+      "#0000ff",
+      "#ff00ff",
+      "#00ffff",
+      "#ffffff",
+    ];
+    return map[n];
+  }
+
+  // 16-231: 6x6x6 cube
+  if (n >= 16 && n <= 231) {
+    const idx = n - 16;
+    const r = Math.floor(idx / 36);
+    const g = Math.floor((idx % 36) / 6);
+    const b = idx % 6;
+
+    const conv = (c) => (c === 0 ? 0 : 55 + c * 40);
+    return `rgb(${conv(r)},${conv(g)},${conv(b)})`;
+  }
+
+  // 232-255: grayscale ramp
+  if (n >= 232 && n <= 255) {
+    const v = 8 + (n - 232) * 10;
+    return `rgb(${v},${v},${v})`;
+  }
+
+  return null;
+}
+
+function parseAnsiToSegments(input) {
+  // returns array of { text, fg, bg, bold, underline }
+  const out = [];
+  let lastIndex = 0;
+
+  let style = { fg: null, bg: null, bold: false, underline: false };
+
+  function pushText(txt) {
+    if (!txt) return;
+    out.push({ text: txt, ...style });
+  }
+
+  const matches = input.matchAll(ANSI_RE);
+  for (const m of matches) {
+    const idx = m.index ?? 0;
+    const esc = m[0];
+
+    // text before this escape
+    pushText(input.slice(lastIndex, idx));
+    lastIndex = idx + esc.length;
+
+    // parse SGR params
+    const inside = esc.slice(2, -1); // remove \x1b[  and trailing m
+    const params = inside.length ? inside.split(";").map((x) => safeInt(x, 0)) : [0];
+
+    // apply params
+    let i = 0;
+    while (i < params.length) {
+      const p = params[i];
+
+      if (p === 0) style = { fg: null, bg: null, bold: false, underline: false };
+      else if (p === 1) style.bold = true;
+      else if (p === 22) style.bold = false;
+      else if (p === 4) style.underline = true;
+      else if (p === 24) style.underline = false;
+      else if ((p >= 30 && p <= 37) || (p >= 90 && p <= 97)) style.fg = BASIC_16[p] || style.fg;
+      else if ((p >= 40 && p <= 47) || (p >= 100 && p <= 107)) style.bg = BG_16[p] || style.bg;
+      else if (p === 39) style.fg = null; // default fg
+      else if (p === 49) style.bg = null; // default bg
+      else if (p === 38 || p === 48) {
+        // extended color
+        const isFg = p === 38;
+        const mode = params[i + 1];
+
+        if (mode === 5) {
+          const n = params[i + 2];
+          const rgb = xterm256ToRgb(n);
+          if (rgb) {
+            if (isFg) style.fg = rgb;
+            else style.bg = rgb;
+          }
+          i += 3;
+          continue;
+        }
+
+        if (mode === 2) {
+          const r = params[i + 2];
+          const g = params[i + 3];
+          const b = params[i + 4];
+          if ([r, g, b].every((v) => Number.isFinite(v))) {
+            const rgb = `rgb(${clamp(r, 0, 255)},${clamp(g, 0, 255)},${clamp(b, 0, 255)})`;
+            if (isFg) style.fg = rgb;
+            else style.bg = rgb;
+          }
+          i += 5;
+          continue;
+        }
+      }
+
+      i += 1;
+    }
+  }
+
+  // trailing text
+  pushText(input.slice(lastIndex));
+  return out;
+}
+
+function tokenizeAnsi(raw) {
+  // tokens: {type:'esc'|'char', value:string}
+  const tokens = [];
+  let i = 0;
+
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === "\x1b" && raw[i + 1] === "[") {
+      // find 'm'
+      let j = i + 2;
+      while (j < raw.length && raw[j] !== "m") j++;
+      if (j < raw.length) {
+        tokens.push({ type: "esc", value: raw.slice(i, j + 1) });
+        i = j + 1;
+        continue;
+      }
+    }
+    tokens.push({ type: "char", value: ch });
+    i++;
+  }
+
+  return tokens;
+}
+
+/** ---------- Render model ---------- */
+let renderLines = []; // each {type:'prompt'|'out', path?:string, rawText:string}
+
+function resetTerminal() {
+  renderLines = [];
+  renderTerminalPreview();
+}
+
+function isCommandStep(step) {
+  return (step.path || "").trim().length > 0; // matches screenshot style: blank path = output
+}
+
+function ensurePromptLine(path) {
+  const line = { type: "prompt", path: path || "/home", rawText: "" };
+  renderLines.push(line);
+  return line;
+}
+function ensureOutLine() {
+  const line = { type: "out", rawText: "" };
+  renderLines.push(line);
+  return line;
+}
+
+/** ---------- DOM terminal render (ANSI-aware) ---------- */
+function makeSpan(seg, defaultColor) {
+  const s = document.createElement("span");
+  s.textContent = seg.text;
+
+  const fg = seg.fg || defaultColor;
+  if (fg) s.style.color = fg;
+  if (seg.bg) {
+    s.style.backgroundColor = seg.bg;
+    s.style.padding = "0 2px";
+    s.style.borderRadius = "4px";
+  }
+  if (seg.bold) s.style.fontWeight = "900";
+  if (seg.underline) s.style.textDecoration = "underline";
+  return s;
+}
+
+function appendAnsiSegments(container, rawText, defaultColor) {
+  const segments = parseAnsiToSegments(rawText || "");
+  for (const seg of segments) {
+    // support newlines by splitting into separate DOM lines
+    const parts = seg.text.split("\n");
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].length) container.appendChild(makeSpan({ ...seg, text: parts[i] }, defaultColor));
+      if (i < parts.length - 1) container.appendChild(document.createElement("br"));
+    }
+  }
+}
+
+function renderTerminalPreview() {
+  terminalScreen.innerHTML = "";
+
+  // If empty, show a blank line with cursor
+  if (renderLines.length === 0) {
+    const line = document.createElement("div");
+    line.className = "termLine";
+    const cur = document.createElement("span");
+    cur.className = "cursor";
+    line.appendChild(cur);
+    terminalScreen.appendChild(line);
+    return;
+  }
+
+  renderLines.forEach((ln, idx) => {
+    const isLast = idx === renderLines.length - 1;
+
+    const line = document.createElement("div");
+    line.className = "termLine";
+
+    if (ln.type === "prompt") {
+      const path = document.createElement("span");
+      path.className = "segPath";
+      path.textContent = ln.path || "/";
+
+      const dollar = document.createElement("span");
+      dollar.className = "segDollar";
+      dollar.textContent = " $ ";
+
+      const cmd = document.createElement("span");
+      cmd.className = "segCmd";
+      appendAnsiSegments(cmd, ln.rawText || "", "#e5e7eb");
+
+      line.appendChild(path);
+      line.appendChild(dollar);
+      line.appendChild(cmd);
+    } else {
+      const out = document.createElement("span");
+      appendAnsiSegments(out, ln.rawText || "", "#e5e7eb");
+      line.appendChild(out);
+    }
+
+    if (isLast) {
+      const cur = document.createElement("span");
+      cur.className = "cursor";
+      line.appendChild(cur);
+    }
+
+    terminalScreen.appendChild(line);
+  });
+}
+
+/** ---------- Canvas drawing (ANSI-aware) ---------- */
+function makeCanvasForExport() {
+  const rect = terminalScreen.getBoundingClientRect();
+  const scale = clamp(state.settings.gifScale, 1, 3);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(2, Math.floor(rect.width * scale));
+  canvas.height = Math.max(2, Math.floor(rect.height * scale));
+  return { canvas, scale };
+}
+
+function drawBackground(ctx, w, h) {
+  const g = ctx.createRadialGradient(w * 0.3, h * 0.25, w * 0.05, w * 0.3, h * 0.25, w * 1.2);
+  if (state.settings.theme === "charcoal") {
+    g.addColorStop(0, "#141821");
+    g.addColorStop(1, "#0c0f16");
+  } else {
+    g.addColorStop(0, "#0a1428");
+    g.addColorStop(1, "#0b1020");
+  }
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function measureText(ctx, txt) {
+  return ctx.measureText(txt).width;
+}
+
+function drawTextChunk(ctx, txt, x, y, fg, bg, fontSize) {
+  if (!txt) return 0;
+
+  const w = measureText(ctx, txt);
+
+  if (bg) {
+    ctx.fillStyle = bg;
+    ctx.fillRect(x, y + Math.floor(fontSize * 0.15), w, Math.floor(fontSize * 1.15));
+  }
+
+  ctx.fillStyle = fg || "#e5e7eb";
+  ctx.fillText(txt, x, y);
+  return w;
+}
+
+function drawSegmentsWrapped(ctx, segments, xStart, yStart, maxWidth, lineH, fontSize, defaultFg) {
+  let x = xStart;
+  let y = yStart;
+
+  const pushLine = () => {
+    x = xStart;
+    y += lineH;
+  };
+
+  for (const seg of segments) {
+    const fg = seg.fg || defaultFg;
+    const bg = seg.bg || null;
+
+    // handle newlines inside a segment
+    const parts = (seg.text || "").split("\n");
+    for (let pi = 0; pi < parts.length; pi++) {
+      const text = parts[pi];
+
+      // draw with char wrapping
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const w = measureText(ctx, ch);
+
+        if (x + w > xStart + maxWidth) pushLine();
+
+        drawTextChunk(ctx, ch, x, y, fg, bg, fontSize);
+        x += w;
+      }
+
+      if (pi < parts.length - 1) pushLine();
+    }
+  }
+
+  return { x, y };
+}
+
+function drawTerminalToCanvas(ctx, w, h, scale) {
+  drawBackground(ctx, w, h);
+
+  const fontSize = state.settings.fontSizePx * scale;
+  const pad = state.settings.paddingPx * scale;
+
+  ctx.font = `600 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
+  ctx.textBaseline = "top";
+
+  const lineH = Math.floor(fontSize * 1.45);
+  let y = pad;
+  const maxWidth = w - pad * 2;
+
+  for (const ln of renderLines) {
+    if (y > h - pad - lineH) break;
+
+    if (ln.type === "prompt") {
+      const path = ln.path || "/home";
+      const dollar = " $ ";
+
+      // path (green)
+      let x = pad;
+      ctx.fillStyle = "#39d353";
+      ctx.fillText(path, x, y);
+      x += measureText(ctx, path);
+
+      // dollar (gray)
+      ctx.fillStyle = "#b8c2d1";
+      ctx.fillText(dollar, x, y);
+      x += measureText(ctx, dollar);
+
+      // cmd (ansi)
+      const segs = parseAnsiToSegments(ln.rawText || "");
+      drawSegmentsWrapped(ctx, segs, x, y, maxWidth - (x - pad), lineH, fontSize, "#e5e7eb");
+    } else {
+      const segs = parseAnsiToSegments(ln.rawText || "");
+      drawSegmentsWrapped(ctx, segs, pad, y, maxWidth, lineH, fontSize, "#e5e7eb");
+    }
+
+    y += lineH;
+  }
+
+  // cursor block (bottom-ish)
+  ctx.fillStyle = "#39d353";
+  ctx.fillRect(pad, Math.min(h - pad - lineH, y) + Math.floor(fontSize * 0.15), Math.floor(fontSize * 0.55), Math.floor(fontSize * 1.05));
+}
+
+/** ---------- Simulation engine ---------- */
+async function simulate({ mode, gif, canvasCtx, canvasW, canvasH, canvasScale, timeScale }) {
+  // mode:
+  //  - "preview" (real-time sleep)
+  //  - "gif" (no sleep; add frames with delays)
+  //  - "video" (real-time sleep; draw to export canvas)
+  const typingDelay = clamp(state.settings.typingMsPerChar, 1, 200);
+  const scaled = clamp(timeScale ?? 1, 0.05, 5);
+
+  resetTerminal();
+
+  function drawAndMaybeFrame(delayMs) {
+    renderTerminalPreview();
+
+    if (mode === "gif" && gif) {
+      // draw to temp canvas for gif
+      // (gif.js needs a canvas to snapshot)
+      // We'll use the export canvasCtx if provided; else create local
+      if (canvasCtx) {
+        drawTerminalToCanvas(canvasCtx, canvasW, canvasH, canvasScale);
+        gif.addFrame(canvasCtx.canvas, { copy: true, delay: clamp(delayMs, 0, 600000) });
+      }
+    }
+
+    if (mode === "video" && canvasCtx) {
+      drawTerminalToCanvas(canvasCtx, canvasW, canvasH, canvasScale);
+    }
+  }
+
+  // initial
+  if (mode === "gif") drawAndMaybeFrame(200);
+  else drawAndMaybeFrame(0);
+
+  for (const step of state.steps) {
+    const cmd = isCommandStep(step);
+    const text = step.text ?? "";
+    const path = (step.path || "/home").trim();
+
+    const line = cmd ? ensurePromptLine(path) : ensureOutLine();
+
+    if (step.typing) {
+      const tokens = tokenizeAnsi(text);
+      let built = "";
+
+      for (const t of tokens) {
+        built += t.value;
+        line.rawText = built;
+
+        // only delay on visible characters
+        if (t.type === "char") {
+          if (mode === "gif") {
+            drawAndMaybeFrame(typingDelay);
+          } else {
+            drawAndMaybeFrame(0);
+            await sleep(typingDelay * scaled);
+          }
+        }
+      }
+
+      // ensure at least one frame after typing finishes
+      if (mode === "gif") drawAndMaybeFrame(40);
+      else drawAndMaybeFrame(0);
+    } else {
+      line.rawText = text;
+      if (mode === "gif") drawAndMaybeFrame(40);
+      else drawAndMaybeFrame(0);
+
+      if (mode !== "gif") await sleep(40 * scaled);
+    }
+
+    const hold = clamp(step.timeout ?? 0, 0, 600000);
+    if (mode === "gif") {
+      drawAndMaybeFrame(hold);
+    } else {
+      await sleep(hold * scaled);
+    }
+  }
+
+  if (mode === "gif") drawAndMaybeFrame(400);
+  else drawAndMaybeFrame(0);
+}
+
+/** ---------- Rows UI (closer to screenshot) ---------- */
 function createSwitch(checked, onChange) {
   const wrap = document.createElement("label");
   wrap.className = "switch";
@@ -138,13 +695,37 @@ function createSwitch(checked, onChange) {
   return wrap;
 }
 
-// --- UI rows ---
+function createOpBtn(label, title, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "opBtn";
+  b.textContent = label;
+  b.title = title;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function setSelectedIndex(idx) {
+  state.selectedIndex = clamp(idx, 0, state.steps.length - 1);
+  saveState();
+  renderRows();
+  syncMultilineEditorFromSelection();
+}
+
+function syncMultilineEditorFromSelection() {
+  const step = state.steps[state.selectedIndex];
+  multilineEditor.value = step?.text ?? "";
+
+  multilineEditor.classList.toggle("big", !!state.multiline);
+}
+
 function renderRows() {
   rowsEl.innerHTML = "";
 
   state.steps.forEach((step, idx) => {
     const row = document.createElement("div");
-    row.className = "row";
+    row.className = "row" + (idx === state.selectedIndex ? " selected" : "");
+    row.addEventListener("click", () => setSelectedIndex(idx));
 
     const path = document.createElement("input");
     path.className = "input";
@@ -155,28 +736,19 @@ function renderRows() {
       saveState();
     });
 
-    const cmdWrap = document.createElement("div");
-    if (state.multiline) {
-      const ta = document.createElement("textarea");
-      ta.className = "textarea";
-      ta.placeholder = "command or output text...";
-      ta.value = step.text ?? "";
-      ta.addEventListener("input", () => {
-        step.text = ta.value;
-        saveState();
-      });
-      cmdWrap.appendChild(ta);
-    } else {
-      const cmd = document.createElement("input");
-      cmd.className = "input";
-      cmd.placeholder = "command or output text...";
-      cmd.value = step.text ?? "";
-      cmd.addEventListener("input", () => {
-        step.text = cmd.value;
-        saveState();
-      });
-      cmdWrap.appendChild(cmd);
-    }
+    const cmd = document.createElement("input");
+    cmd.className = "input";
+    cmd.placeholder = "command or output text…";
+    cmd.value = (step.text ?? "").split("\n")[0]; // preview first line in the row
+    cmd.addEventListener("input", () => {
+      // if multiline enabled, we still allow editing first line in-row
+      const current = step.text ?? "";
+      const lines = current.split("\n");
+      lines[0] = cmd.value;
+      step.text = lines.join("\n");
+      saveState();
+      if (idx === state.selectedIndex) multilineEditor.value = step.text ?? "";
+    });
 
     const typing = document.createElement("div");
     typing.style.display = "flex";
@@ -195,37 +767,37 @@ function renderRows() {
     timeout.step = "10";
     timeout.value = String(step.timeout ?? 0);
     timeout.addEventListener("input", () => {
-      step.timeout = clamp(parseInt(timeout.value || "0", 10), 0, 600000);
+      step.timeout = clamp(safeInt(timeout.value, 0), 0, 600000);
       saveState();
     });
 
     const ops = document.createElement("div");
-    ops.style.display = "flex";
-    ops.style.justifyContent = "center";
-    ops.style.gap = "8px";
+    ops.className = "ops";
 
-    const del = iconBtn("−");
-    del.title = "Remove row";
-    del.addEventListener("click", () => {
+    const del = createOpBtn("−", "Remove row", (e) => {
+      e.stopPropagation();
+      if (state.steps.length === 1) return;
+
       state.steps.splice(idx, 1);
-      if (state.steps.length === 0) state.steps.push({ path: "/home", text: "", typing: true, timeout: 0, kind: "cmd" });
+      if (state.selectedIndex >= state.steps.length) state.selectedIndex = state.steps.length - 1;
       saveState();
       renderRows();
+      syncMultilineEditorFromSelection();
     });
 
-    const add = iconBtn("+");
-    add.title = "Add row below";
-    add.addEventListener("click", () => {
-      state.steps.splice(idx + 1, 0, { path: "", text: "", typing: false, timeout: 0, kind: "out" });
+    const add = createOpBtn("+", "Add row below", (e) => {
+      e.stopPropagation();
+      state.steps.splice(idx + 1, 0, { path: "", text: "", typing: false, timeout: 0 });
       saveState();
       renderRows();
+      setSelectedIndex(idx + 1);
     });
 
     ops.appendChild(del);
     ops.appendChild(add);
 
     row.appendChild(path);
-    row.appendChild(cmdWrap);
+    row.appendChild(cmd);
     row.appendChild(typing);
     row.appendChild(timeout);
     row.appendChild(ops);
@@ -234,335 +806,104 @@ function renderRows() {
   });
 }
 
-// --- Terminal preview render ---
-function renderTerminalPreview({ showCursor = true } = {}) {
-  terminalScreen.innerHTML = "";
+/** ---------- Presets: Import / Export JSON ---------- */
+function getPresetJsonString() {
+  const preset = {
+    version: 2,
+    settings: state.settings,
+    multiline: state.multiline,
+    steps: state.steps,
+  };
+  return JSON.stringify(preset, null, 2);
+}
 
-  renderLines.forEach((ln, i) => {
-    const line = document.createElement("div");
-    line.className = "termLine";
+function loadPresetFromObject(obj) {
+  if (!obj || typeof obj !== "object") throw new Error("Invalid JSON");
 
-    if (ln.type === "prompt") {
-      const path = document.createElement("span");
-      path.className = "segPath";
-      path.textContent = ln.path || "/";
+  const next = structuredClone(DEFAULT_STATE);
 
-      const dollar = document.createElement("span");
-      dollar.className = "segDollar";
-      dollar.textContent = " $ ";
-
-      const cmd = document.createElement("span");
-      cmd.className = "segCmd";
-      cmd.textContent = ln.text ?? "";
-
-      line.appendChild(path);
-      line.appendChild(dollar);
-      line.appendChild(cmd);
-    } else {
-      const out = document.createElement("span");
-      out.className = "segOut";
-      out.textContent = ln.text ?? "";
-      line.appendChild(out);
-    }
-
-    // cursor on last line
-    const isLast = i === renderLines.length - 1;
-    if (showCursor && isLast) {
-      const cur = document.createElement("span");
-      cur.className = "cursor";
-      line.appendChild(cur);
-    }
-
-    terminalScreen.appendChild(line);
-  });
-
-  // if empty, show a cursor line
-  if (renderLines.length === 0) {
-    const line = document.createElement("div");
-    line.className = "termLine";
-    const cur = document.createElement("span");
-    cur.className = "cursor";
-    line.appendChild(cur);
-    terminalScreen.appendChild(line);
+  if (obj.settings && typeof obj.settings === "object") {
+    next.settings = { ...next.settings, ...obj.settings };
   }
-}
+  if (typeof obj.multiline === "boolean") next.multiline = obj.multiline;
 
-// --- Canvas render for GIF ---
-function makeCanvasForGif() {
-  const rect = terminalScreen.getBoundingClientRect();
-  const scale = clamp(state.settings.gifScale, 1, 3);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(2, Math.floor(rect.width * scale));
-  canvas.height = Math.max(2, Math.floor(rect.height * scale));
-  return { canvas, scale };
-}
-
-function wrapText(ctx, text, maxWidth) {
-  // simple wrap by words; if a word is too long, break by chars
-  const words = (text || "").split(" ");
-  const lines = [];
-  let current = "";
-
-  for (const w of words) {
-    const test = current ? `${current} ${w}` : w;
-    if (ctx.measureText(test).width <= maxWidth) {
-      current = test;
-      continue;
-    }
-
-    if (current) lines.push(current);
-
-    // word itself too long
-    if (ctx.measureText(w).width > maxWidth) {
-      let chunk = "";
-      for (const ch of w) {
-        const t = chunk + ch;
-        if (ctx.measureText(t).width <= maxWidth) chunk = t;
-        else {
-          if (chunk) lines.push(chunk);
-          chunk = ch;
-        }
-      }
-      current = chunk;
-    } else {
-      current = w;
-    }
+  if (Array.isArray(obj.steps)) {
+    next.steps = obj.steps.map((s) => ({
+      path: String(s.path ?? ""),
+      text: String(s.text ?? ""),
+      typing: !!s.typing,
+      timeout: clamp(safeInt(s.timeout, 0), 0, 600000),
+    }));
+    if (next.steps.length === 0) next.steps = structuredClone(DEFAULT_STATE.steps);
   }
 
-  if (current) lines.push(current);
-  return lines;
-}
+  next.selectedIndex = 0;
 
-function drawTerminalToCanvas(ctx, w, h, scale) {
-  // background gradient
-  const g = ctx.createRadialGradient(w * 0.3, h * 0.25, w * 0.05, w * 0.3, h * 0.25, w * 1.2);
-  g.addColorStop(0, "#0a1428");
-  g.addColorStop(1, "#0b1020");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
+  state = next;
+  saveState();
 
-  const fontSize = state.settings.fontSizePx * scale;
-  const pad = state.settings.paddingPx * scale;
-
-  ctx.font = `600 ${fontSize}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace`;
-  ctx.textBaseline = "top";
-
-  const lineH = Math.floor(fontSize * 1.45);
-  let y = pad;
-
-  const maxWidth = w - pad * 2;
-
-  for (let i = 0; i < renderLines.length; i++) {
-    const ln = renderLines[i];
-
-    if (ln.type === "prompt") {
-      const path = ln.path || "/";
-      const dollar = " $ ";
-      const cmd = ln.text || "";
-
-      // We need wrapping, but keep colors: easiest is build a full string and draw same color except path/dollar.
-      // We'll wrap as a combined string, then do a best-effort color split only on first line.
-      const full = `${path}${dollar}${cmd}`;
-      const wrapped = wrapText(ctx, full, maxWidth);
-
-      for (let wi = 0; wi < wrapped.length; wi++) {
-        const lineText = wrapped[wi];
-
-        // draw with segments only if this is the first wrapped line and it starts with the prompt
-        if (wi === 0 && lineText.startsWith(path)) {
-          const x0 = pad;
-
-          // path green
-          ctx.fillStyle = "#39d353";
-          ctx.fillText(path, x0, y);
-          const pathW = ctx.measureText(path).width;
-
-          // dollar gray
-          ctx.fillStyle = "#b8c2d1";
-          ctx.fillText(dollar, x0 + pathW, y);
-          const dollarW = ctx.measureText(dollar).width;
-
-          // cmd white (remaining)
-          const rest = lineText.slice(path.length + dollar.length);
-          ctx.fillStyle = "#e5e7eb";
-          ctx.fillText(rest, x0 + pathW + dollarW, y);
-        } else {
-          ctx.fillStyle = "#e5e7eb";
-          ctx.fillText(lineText, pad, y);
-        }
-
-        y += lineH;
-        if (y > h - pad - lineH) break;
-      }
-    } else {
-      const wrapped = wrapText(ctx, ln.text || "", maxWidth);
-      ctx.fillStyle = "#e5e7eb";
-      for (const t of wrapped) {
-        ctx.fillText(t, pad, y);
-        y += lineH;
-        if (y > h - pad - lineH) break;
-      }
-    }
-
-    if (y > h - pad - lineH) break;
-  }
-
-  // cursor on last line (simple block)
-  const lastY = Math.min(h - pad - lineH, y);
-  ctx.fillStyle = "#39d353";
-  ctx.fillRect(pad, lastY + Math.floor(fontSize * 0.15), Math.floor(fontSize * 0.55), Math.floor(fontSize * 1.05));
-}
-
-// --- Simulation engine ---
-function resetTerminal() {
-  renderLines = [];
-  renderTerminalPreview({ showCursor: true });
-}
-
-function ensurePromptLine(path) {
-  const line = { type: "prompt", path: path || "/home", text: "" };
-  renderLines.push(line);
-  return line;
-}
-
-function ensureOutLine() {
-  const line = { type: "out", text: "" };
-  renderLines.push(line);
-  return line;
-}
-
-async function runSimulation({ capture = false, gif = null } = {}) {
-  const typingDelay = clamp(state.settings.typingMsPerChar, 1, 200);
-
+  applySettingsToPreview();
+  multilineToggle.checked = !!state.multiline;
+  renderRows();
+  syncMultilineEditorFromSelection();
   resetTerminal();
-  cursorOn = true;
-
-  let captureCanvas = null;
-  let captureCtx = null;
-  let captureScale = 1;
-
-  if (capture) {
-    const { canvas, scale } = makeCanvasForGif();
-    captureCanvas = canvas;
-    captureScale = scale;
-    captureCtx = canvas.getContext("2d");
-  }
-
-  function captureFrame(delayMs) {
-    if (!capture || !gif) return;
-
-    // draw current terminal to canvas
-    drawTerminalToCanvas(captureCtx, captureCanvas.width, captureCanvas.height, captureScale);
-
-    gif.addFrame(captureCanvas, {
-      copy: true,
-      delay: clamp(delayMs, 0, 600000),
-    });
-  }
-
-  // initial still
-  renderTerminalPreview({ showCursor: true });
-  captureFrame(200);
-
-  for (const step of state.steps) {
-    const isCmd = (step.kind || "cmd") === "cmd";
-    const path = (step.path || "/home").trim();
-    const text = step.text ?? "";
-
-    if (isCmd) {
-      const line = ensurePromptLine(path);
-
-      if (step.typing) {
-        line.text = "";
-        renderTerminalPreview({ showCursor: true });
-        captureFrame(typingDelay);
-
-        for (const ch of text) {
-          line.text += ch;
-          renderTerminalPreview({ showCursor: true });
-          captureFrame(typingDelay);
-          if (!capture) await sleep(typingDelay);
-        }
-      } else {
-        line.text = text;
-        renderTerminalPreview({ showCursor: true });
-        captureFrame(40);
-        if (!capture) await sleep(40);
-      }
-    } else {
-      const line = ensureOutLine();
-
-      if (step.typing) {
-        line.text = "";
-        renderTerminalPreview({ showCursor: true });
-        captureFrame(typingDelay);
-
-        for (const ch of text) {
-          line.text += ch;
-          renderTerminalPreview({ showCursor: true });
-          captureFrame(typingDelay);
-          if (!capture) await sleep(typingDelay);
-        }
-      } else {
-        line.text = text;
-        renderTerminalPreview({ showCursor: true });
-        captureFrame(40);
-        if (!capture) await sleep(40);
-      }
-    }
-
-    const t = clamp(step.timeout ?? 0, 0, 600000);
-    // add a “still” frame with delay = timeout (cheap and keeps file small)
-    renderTerminalPreview({ showCursor: true });
-    captureFrame(t);
-
-    if (!capture) await sleep(t);
-  }
-
-  // final hold
-  renderTerminalPreview({ showCursor: true });
-  captureFrame(400);
 }
 
-// --- Settings modal ---
+function downloadTextFile(filename, text, mime = "application/json") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/** ---------- Modals ---------- */
 function openSettings() {
   setTyping.value = String(state.settings.typingMsPerChar);
   setFontSize.value = String(state.settings.fontSizePx);
   setPad.value = String(state.settings.paddingPx);
   setScale.value = String(state.settings.gifScale);
   setQuality.value = String(state.settings.gifQuality);
+  setFps.value = String(state.settings.videoFps);
+  setVideoScale.value = String(state.settings.videoTimeScale);
+  setBitrate.value = String(state.settings.videoBitrateMbps);
   setTheme.value = state.settings.theme;
 
-  modal.hidden = false;
+  presetTextarea.value = getPresetJsonString();
+
+  settingsModal.hidden = false;
 }
-function closeSettings() {
-  modal.hidden = true;
+
+function closeSettingsModal() {
+  settingsModal.hidden = true;
 }
 
-// --- Events ---
-btnSim.addEventListener("click", async () => {
-  if (simRunning) return;
-  simRunning = true;
-  setExportUI({ show: false, status: "", busy: false, downloadableUrl: null });
+function openExport() {
+  setExportModalUI({ status: "Ready", downloadableUrl: null, filename: "" });
+  exportModal.hidden = false;
+}
+function closeExportModal() {
+  exportModal.hidden = true;
+}
 
-  // quick normalize: treat empty text command with cmd kind as just a prompt line
-  await runSimulation({ capture: false });
-
-  simRunning = false;
-});
-
-btnExport.addEventListener("click", async () => {
+/** ---------- Exports ---------- */
+async function exportGif() {
   if (simRunning) return;
   simRunning = true;
 
   setExportUI({ show: true, status: "Exporting GIF…", busy: true, downloadableUrl: null });
+  setExportModalUI({ status: "Exporting GIF…", downloadableUrl: null, filename: "" });
 
-  // IMPORTANT: tell gif.js where the worker is (CDN), so it works on GitHub Pages
   const workerScript = "https://cdn.jsdelivr.net/npm/gif.js.optimized/dist/gif.worker.js";
 
-  // Build a fresh GIF
-  const { canvas } = makeCanvasForGif();
+  const { canvas, scale } = makeCanvasForExport();
+  const ctx = canvas.getContext("2d");
 
   const gif = new GIF({
     workers: 2,
@@ -573,13 +914,22 @@ btnExport.addEventListener("click", async () => {
   });
 
   try {
-    // collect frames (fast, no waiting)
-    await runSimulation({ capture: true, gif });
+    await simulate({
+      mode: "gif",
+      gif,
+      canvasCtx: ctx,
+      canvasW: canvas.width,
+      canvasH: canvas.height,
+      canvasScale: scale,
+      timeScale: 1,
+    });
 
     await new Promise((resolve, reject) => {
       gif.on("finished", (blob) => {
         const url = URL.createObjectURL(blob);
-        setExportUI({ show: true, status: "Done ✅", busy: false, downloadableUrl: url });
+        const filename = "terminal.gif";
+        setExportUI({ show: true, status: "Done ✅", busy: false, downloadableUrl: url, filename });
+        setExportModalUI({ status: "Done ✅", downloadableUrl: url, filename });
         resolve();
       });
       gif.on("abort", () => reject(new Error("GIF render aborted")));
@@ -587,48 +937,224 @@ btnExport.addEventListener("click", async () => {
     });
   } catch (e) {
     console.error(e);
-    setExportUI({ show: true, status: "Export failed. Open console for details.", busy: false, downloadableUrl: null });
+    setExportUI({ show: true, status: "GIF export failed. Check console.", busy: false, downloadableUrl: null });
+    setExportModalUI({ status: "GIF export failed. Check console.", downloadableUrl: null, filename: "" });
   }
 
   simRunning = false;
+}
+
+function pickBestVideoMimeType() {
+  const candidates = [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+
+  for (const c of candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return "";
+}
+
+async function exportMp4OrWebm() {
+  if (simRunning) return;
+  simRunning = true;
+
+  setExportUI({ show: true, status: "Exporting video…", busy: true, downloadableUrl: null });
+  setExportModalUI({ status: "Exporting video…", downloadableUrl: null, filename: "" });
+
+  try {
+    const mimeType = pickBestVideoMimeType();
+    if (!mimeType) throw new Error("MediaRecorder is not supported in this browser.");
+
+    const ext = mimeType.includes("mp4") ? "mp4" : "webm";
+    const filename = `terminal.${ext}`;
+
+    const fps = clamp(safeInt(state.settings.videoFps, 30), 10, 60);
+    const timeScale = clamp(safeFloat(state.settings.videoTimeScale, 1.0), 0.25, 2.0);
+    const bitrate = clamp(safeInt(state.settings.videoBitrateMbps, 8), 1, 20) * 1_000_000;
+
+    // Use export canvas sized from preview (same as GIF scale)
+    const { canvas, scale } = makeCanvasForExport();
+    const ctx = canvas.getContext("2d");
+
+    // Initial draw
+    resetTerminal();
+    drawTerminalToCanvas(ctx, canvas.width, canvas.height, scale);
+
+    const stream = canvas.captureStream(fps);
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: bitrate });
+
+    const chunks = [];
+    const done = new Promise((resolve) => {
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = resolve;
+    });
+
+    recorder.start();
+
+    // run sim in real-time (scaled)
+    await simulate({
+      mode: "video",
+      canvasCtx: ctx,
+      canvasW: canvas.width,
+      canvasH: canvas.height,
+      canvasScale: scale,
+      timeScale,
+    });
+
+    // Give the recorder a small tail
+    await sleep(250);
+    recorder.stop();
+
+    await done;
+
+    const blob = new Blob(chunks, { type: mimeType });
+    const url = URL.createObjectURL(blob);
+
+    setExportUI({ show: true, status: "Done ✅", busy: false, downloadableUrl: url, filename });
+    setExportModalUI({ status: "Done ✅", downloadableUrl: url, filename });
+  } catch (e) {
+    console.error(e);
+    setExportUI({ show: true, status: "Video export failed. Check console.", busy: false, downloadableUrl: null });
+    setExportModalUI({ status: "Video export failed. Check console.", downloadableUrl: null, filename: "" });
+  }
+
+  simRunning = false;
+}
+
+/** ---------- Events ---------- */
+btnSim.addEventListener("click", async () => {
+  if (simRunning) return;
+  simRunning = true;
+
+  setExportUI({ show: false, status: "", busy: false, downloadableUrl: null });
+
+  try {
+    await simulate({ mode: "preview", timeScale: 1 });
+  } finally {
+    simRunning = false;
+  }
 });
 
+btnExport.addEventListener("click", openExport);
 btnSettings.addEventListener("click", openSettings);
-closeModal.addEventListener("click", closeSettings);
-modal.addEventListener("click", (e) => {
-  if (e.target === modal) closeSettings();
+
+closeSettings.addEventListener("click", closeSettingsModal);
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
 });
+
+closeExport.addEventListener("click", closeExportModal);
+exportModal.addEventListener("click", (e) => {
+  if (e.target === exportModal) closeExportModal();
+});
+
+btnExportGif.addEventListener("click", exportGif);
+btnExportMp4.addEventListener("click", exportMp4OrWebm);
 
 btnSaveSettings.addEventListener("click", () => {
-  state.settings.typingMsPerChar = clamp(parseInt(setTyping.value || "28", 10), 1, 200);
-  state.settings.fontSizePx = clamp(parseInt(setFontSize.value || "16", 10), 10, 28);
-  state.settings.paddingPx = clamp(parseInt(setPad.value || "18", 10), 8, 40);
-  state.settings.gifScale = clamp(parseInt(setScale.value || "2", 10), 1, 3);
-  state.settings.gifQuality = clamp(parseInt(setQuality.value || "10", 10), 1, 30);
+  state.settings.typingMsPerChar = clamp(safeInt(setTyping.value, 28), 1, 200);
+  state.settings.fontSizePx = clamp(safeInt(setFontSize.value, 16), 10, 28);
+  state.settings.paddingPx = clamp(safeInt(setPad.value, 18), 8, 40);
+  state.settings.gifScale = clamp(safeInt(setScale.value, 2), 1, 3);
+  state.settings.gifQuality = clamp(safeInt(setQuality.value, 10), 1, 30);
+
+  state.settings.videoFps = clamp(safeInt(setFps.value, 30), 10, 60);
+  state.settings.videoTimeScale = clamp(safeFloat(setVideoScale.value, 1.0), 0.25, 2.0);
+  state.settings.videoBitrateMbps = clamp(safeInt(setBitrate.value, 8), 1, 20);
+
   state.settings.theme = setTheme.value || "midnight";
 
   applySettingsToPreview();
   saveState();
-  closeSettings();
+  closeSettingsModal();
 });
 
-btnReset.addEventListener("click", () => {
+btnResetDemo.addEventListener("click", () => {
   state = structuredClone(DEFAULT_STATE);
   saveState();
+
   applySettingsToPreview();
-  multilineToggle.checked = state.multiline;
+  multilineToggle.checked = !!state.multiline;
+
   renderRows();
+  syncMultilineEditorFromSelection();
   resetTerminal();
-  closeSettings();
+
+  presetTextarea.value = getPresetJsonString();
 });
 
 multilineToggle.checked = !!state.multiline;
 multilineToggle.addEventListener("change", () => {
   state.multiline = multilineToggle.checked;
   saveState();
-  renderRows();
+  syncMultilineEditorFromSelection();
 });
 
-// init
+multilineEditor.addEventListener("input", () => {
+  const step = state.steps[state.selectedIndex];
+  if (!step) return;
+
+  if (!state.multiline) {
+    // If multiline is OFF, prevent newline edits (keep first line only)
+    step.text = multilineEditor.value.replace(/\r?\n/g, " ");
+    multilineEditor.value = step.text;
+  } else {
+    step.text = multilineEditor.value;
+  }
+
+  saveState();
+  renderRows(); // refresh row preview first line
+});
+
+btnCopyJson.addEventListener("click", async () => {
+  try {
+    presetTextarea.value = getPresetJsonString();
+    await navigator.clipboard.writeText(presetTextarea.value);
+    alert("Copied JSON to clipboard.");
+  } catch {
+    alert("Copy failed (clipboard permissions). You can manually copy from the box.");
+  }
+});
+
+btnDownloadJson.addEventListener("click", () => {
+  presetTextarea.value = getPresetJsonString();
+  downloadTextFile("terminal-gif-maker-preset.json", presetTextarea.value);
+});
+
+fileJson.addEventListener("change", async () => {
+  const file = fileJson.files?.[0];
+  if (!file) return;
+
+  try {
+    const text = await file.text();
+    presetTextarea.value = text;
+    alert("Loaded JSON into the box. Click “Load JSON into editor” to apply.");
+  } catch {
+    alert("Could not read that file.");
+  } finally {
+    fileJson.value = "";
+  }
+});
+
+btnLoadJson.addEventListener("click", () => {
+  try {
+    const obj = JSON.parse(presetTextarea.value);
+    loadPresetFromObject(obj);
+    alert("Preset loaded.");
+  } catch (e) {
+    console.error(e);
+    alert("Invalid JSON. Make sure it’s a preset exported by this app.");
+  }
+});
+
+/** ---------- Init ---------- */
 renderRows();
+syncMultilineEditorFromSelection();
 resetTerminal();
