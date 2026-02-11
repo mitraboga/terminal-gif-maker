@@ -1,9 +1,10 @@
 /* Terminal Gif Maker (GitHub Pages friendly)
    Fixes:
-   - Modals are mutually exclusive (Settings and Export can’t stack)
+   - Modals are mutually exclusive
    - Both modals forced closed on page load
    - ESC closes modal
    - Overlay click closes modal
+   - GIF export: use VERSIONED worker URL + show real error message
 */
 
 const STORAGE_KEY = "tgm_state_v2";
@@ -127,33 +128,27 @@ const downloadLinkModal = document.getElementById("downloadLinkModal");
 
 let simRunning = false;
 
-/** ---------- Modal control (THE FIX) ---------- */
+/** ---------- Modal control ---------- */
 function anyModalOpen() {
   return !settingsModal.hidden || !exportModal.hidden;
 }
-
 function lockBodyScroll(locked) {
   document.body.style.overflow = locked ? "hidden" : "";
 }
-
 function closeSettingsModal() {
   settingsModal.hidden = true;
   if (!anyModalOpen()) lockBodyScroll(false);
 }
-
 function closeExportModal() {
   exportModal.hidden = true;
   if (!anyModalOpen()) lockBodyScroll(false);
 }
-
 function closeAllModals() {
   settingsModal.hidden = true;
   exportModal.hidden = true;
   lockBodyScroll(false);
 }
-
 function openSettings() {
-  // Make sure export is NOT open
   closeExportModal();
 
   setTyping.value = String(state.settings.typingMsPerChar);
@@ -171,9 +166,7 @@ function openSettings() {
   settingsModal.hidden = false;
   lockBodyScroll(true);
 }
-
 function openExport() {
-  // Make sure settings is NOT open
   closeSettingsModal();
 
   setExportModalUI({ status: "Ready", downloadableUrl: null, filename: "" });
@@ -181,14 +174,12 @@ function openExport() {
   lockBodyScroll(true);
 }
 
-/* ESC closes whichever modal is open */
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!exportModal.hidden) closeExportModal();
   else if (!settingsModal.hidden) closeSettingsModal();
 });
 
-/* Clicking overlay closes modal (clicking card does not) */
 settingsModal.addEventListener("click", (e) => {
   if (e.target === settingsModal) closeSettingsModal();
 });
@@ -212,7 +203,6 @@ function setExportUI({ show, status, busy, downloadableUrl, filename }) {
     downloadLink.href = "#";
   }
 }
-
 function setExportModalUI({ status, downloadableUrl, filename }) {
   exportMiniStatus.textContent = status || "Ready";
 
@@ -246,7 +236,6 @@ const BASIC_16 = {
   35: "#a855f7",
   36: "#06b6d4",
   37: "#e5e7eb",
-
   90: "#6b7280",
   91: "#f87171",
   92: "#4ade80",
@@ -266,7 +255,6 @@ const BG_16 = {
   45: "#581c87",
   46: "#155e75",
   47: "#e5e7eb",
-
   100: "#374151",
   101: "#ef4444",
   102: "#22c55e",
@@ -280,22 +268,8 @@ const BG_16 = {
 function xterm256ToRgb(n) {
   if (n >= 0 && n <= 15) {
     const map = [
-      "#000000",
-      "#800000",
-      "#008000",
-      "#808000",
-      "#000080",
-      "#800080",
-      "#008080",
-      "#c0c0c0",
-      "#808080",
-      "#ff0000",
-      "#00ff00",
-      "#ffff00",
-      "#0000ff",
-      "#ff00ff",
-      "#00ffff",
-      "#ffffff",
+      "#000000","#800000","#008000","#808000","#000080","#800080","#008080","#c0c0c0",
+      "#808080","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff","#ffffff",
     ];
     return map[n];
   }
@@ -892,23 +866,33 @@ async function exportGif() {
   if (simRunning) return;
   simRunning = true;
 
-  setExportUI({ show: true, status: "Exporting GIF…", busy: true, downloadableUrl: null });
-  setExportModalUI({ status: "Exporting GIF…", downloadableUrl: null, filename: "" });
-
-  const workerScript = "https://cdn.jsdelivr.net/npm/gif.js.optimized/dist/gif.worker.js";
-
-  const { canvas, scale } = makeCanvasForExport();
-  const ctx = canvas.getContext("2d");
-
-  const gif = new GIF({
-    workers: 2,
-    quality: clamp(state.settings.gifQuality, 1, 30),
-    workerScript,
-    width: canvas.width,
-    height: canvas.height,
-  });
+  const showErr = (msg) => {
+    setExportUI({ show: true, status: msg, busy: false, downloadableUrl: null });
+    setExportModalUI({ status: msg, downloadableUrl: null, filename: "" });
+  };
 
   try {
+    if (typeof window.GIF !== "function") {
+      throw new Error("GIF library not loaded. Refresh the page (Ctrl+Shift+R).");
+    }
+
+    setExportUI({ show: true, status: "Exporting GIF…", busy: true, downloadableUrl: null });
+    setExportModalUI({ status: "Exporting GIF…", downloadableUrl: null, filename: "" });
+
+    // IMPORTANT: use a VERSIONED worker URL to avoid redirects (workers often fail on redirect)
+    const workerScript = "https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js";
+
+    const { canvas, scale } = makeCanvasForExport();
+    const ctx = canvas.getContext("2d");
+
+    const gif = new GIF({
+      workers: 2,
+      quality: clamp(state.settings.gifQuality, 1, 30),
+      workerScript,
+      width: canvas.width,
+      height: canvas.height,
+    });
+
     await simulate({
       mode: "gif",
       gif,
@@ -928,12 +912,13 @@ async function exportGif() {
         resolve();
       });
       gif.on("abort", () => reject(new Error("GIF render aborted")));
+      gif.on("error", (e) => reject(e instanceof Error ? e : new Error(String(e))));
       gif.render();
     });
   } catch (e) {
     console.error(e);
-    setExportUI({ show: true, status: "GIF export failed. Check console.", busy: false, downloadableUrl: null });
-    setExportModalUI({ status: "GIF export failed. Check console.", downloadableUrl: null, filename: "" });
+    const msg = `GIF export failed: ${e?.message ? e.message : String(e)}`;
+    showErr(msg);
   }
 
   simRunning = false;
@@ -1011,8 +996,9 @@ async function exportMp4OrWebm() {
     setExportModalUI({ status: "Done ✅", downloadableUrl: url, filename });
   } catch (e) {
     console.error(e);
-    setExportUI({ show: true, status: "Video export failed. Check console.", busy: false, downloadableUrl: null });
-    setExportModalUI({ status: "Video export failed. Check console.", downloadableUrl: null, filename: "" });
+    const msg = `Video export failed: ${e?.message ? e.message : String(e)}`;
+    setExportUI({ show: true, status: msg, busy: false, downloadableUrl: null });
+    setExportModalUI({ status: msg, downloadableUrl: null, filename: "" });
   }
 
   simRunning = false;
@@ -1023,7 +1009,6 @@ btnSim.addEventListener("click", async () => {
   if (simRunning) return;
   simRunning = true;
 
-  // never auto-open any modal on simulate
   setExportUI({ show: false, status: "", busy: false, downloadableUrl: null });
 
   try {
@@ -1033,14 +1018,8 @@ btnSim.addEventListener("click", async () => {
   }
 });
 
-btnExport.addEventListener("click", () => {
-  // Export modal should appear ONLY when user clicks Export
-  openExport();
-});
-
-btnSettings.addEventListener("click", () => {
-  openSettings();
-});
+btnExport.addEventListener("click", openExport);
+btnSettings.addEventListener("click", openSettings);
 
 closeSettings.addEventListener("click", closeSettingsModal);
 closeExport.addEventListener("click", closeExportModal);
@@ -1143,12 +1122,9 @@ btnLoadJson.addEventListener("click", () => {
   }
 });
 
-/** ---------- Init (FORCE clean state) ---------- */
+/** ---------- Init ---------- */
 function init() {
-  // IMPORTANT: force modals closed on load so the editor is usable
   closeAllModals();
-
-  // keep export row hidden until an export happens
   exportRow.hidden = true;
 
   applySettingsToPreview();
